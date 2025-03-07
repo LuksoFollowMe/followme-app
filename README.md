@@ -1,0 +1,4 @@
+- deploy smartcontract: https://github.com/6B6E6E7468/followme-contracts
+- set followMeAddress in src/stores/Provider.js
+- npm install
+- npm run build / npm run dev
