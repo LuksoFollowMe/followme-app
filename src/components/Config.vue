@@ -87,10 +87,11 @@ watch(campaignAmount, (newAmount) => {
           :max="campaignMaxAmount"
           v-model="campaignMax"
           class="slider"
+          :disabled="balance === 0"
         />
       </label>
 
-      <button @click="start" class="button" :disabled="loading || campaignError">
+      <button @click="start" class="button" :disabled="loading || campaignError || balance === 0">
         {{ loading ? 'Continue in wallet' : 'Start campaign' }}
       </button>
     </div>
