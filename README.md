@@ -26,11 +26,11 @@ Welcome to **FollowMe**, the ultimate follower-boosting app on the **Lukso UP Gr
 
 ## 📌 Architectural Diagram
 
-![Architectural Diagram](https://github.com/LuksoFollowMe/followme-app/docs/diagram.png)
+![Architectural Diagram](docs/diagram.png)
 
 ## 🎥 Demo Video
 
-[![Watch the Demo](https://img.shields.io/badge/Watch-Demo-blue)](https://github.com/LuksoFollowMe/followme-app/docs/demo.mov)
+[![Watch the Demo](https://img.shields.io/badge/Watch-Demo-blue)](docs/demo.mov)
 
 ## 🚀 Live Demo
 
