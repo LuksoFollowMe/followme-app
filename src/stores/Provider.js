@@ -24,6 +24,9 @@ export function useProvider() {
 
   const eip1193Provider = {
     request: async (args) => {
+      if (args.method === 'eth_getTransactionByHash') {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+      }
       const response = await upProvider.request(args)
       if (response && typeof response === 'object' && 'result' in response) {
         return response.result
