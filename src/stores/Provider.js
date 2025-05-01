@@ -1,239 +1,334 @@
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { createClientUPProvider } from '@lukso/up-provider'
 import { ethers } from 'ethers'
 import { ERC725 } from '@erc725/erc725.js'
+import { followMeAddress, LSP26FollowerSystemAddress } from '@/constants'
+import { validateIpfsUrl } from '@/utils/validateIpfsUrl.js'
+import LSP3Schemas from '@erc725/erc725.js/schemas/LSP3ProfileMetadata.json'
+import LSP4Schema from '@erc725/erc725.js/schemas/LSP4DigitalAsset'
+import LSP5Schema from '@erc725/erc725.js/schemas/LSP5ReceivedAssets'
 import LSP6Schema from '@erc725/erc725.js/schemas/LSP6KeyManager.json'
+import LSP7DigitalAsset from '@/abi/LSP7DigitalAsset.json'
 import LSP26FollowerSystem from '@/abi/LSP26FollowerSystem.json'
 import FollowMe from '@/abi/FollowMe.json'
 import UniversalProfile from '@/abi/UniversalProfile.json'
 
-const followMeAddress = '0xa8Bab677C86b35a824426d771E0f6b92917cb9C9'
-const LSP26FollowerSystemAddress = '0xf01103E5a9909Fc0DBe8166dA7085e0285daDDcA'
-const permissions = '0x0000000000000000000000000000000000000000000000000000000000000500'
-
 const contextAccount = ref(undefined)
-const contextCampaign = ref(BigInt(0))
-const contextBalance = ref(BigInt(0))
+const contextCampaign = ref([BigInt(0), 0x0])
+const contextAssets = ref([])
+const contextProfileImage = ref(null)
 
 const account = ref(undefined)
 const accountIsFollowingContext = ref(false)
-const accountCanCollect = ref(false)
+const accountCanCollect = ref(true)
 
-export function useProvider() {
-  const upProvider = createClientUPProvider()
+const upProvider = createClientUPProvider()
 
-  const eip1193Provider = {
-    request: async (args) => {
-      if (args.method === 'eth_getTransactionByHash') {
-        await new Promise((resolve) => setTimeout(resolve, 2000))
-      }
-      const response = await upProvider.request(args)
-      if (response && typeof response === 'object' && 'result' in response) {
-        return response.result
-      }
-      return response
-    },
+const eip1193Provider = {
+  request: async (args) => {
+    const withTimeout = (promise, ms) =>
+      Promise.race([promise, new Promise((resolve) => setTimeout(resolve, ms))])
+
+    const notRespondingMethods =
+      args.method === 'eth_getTransactionByHash' || args.method === 'eth_getTransactionReceipt'
+
+    const response = notRespondingMethods
+      ? await withTimeout(upProvider.request(args), 2000)
+      : await upProvider.request(args)
+
+    return response && typeof response === 'object' && 'result' in response
+      ? response.result
+      : response
+  },
+}
+
+const browserProvider = new ethers.BrowserProvider(eip1193Provider)
+
+const followMeContract = new ethers.Contract(followMeAddress, FollowMe, browserProvider)
+
+const getAssets = async (address) => {
+  const returnAssets = []
+
+  const nativeBalance = BigInt(await browserProvider.getBalance(address))
+  if (nativeBalance > 0n) {
+    returnAssets.push({
+      assetAddress: '0x0000000000000000000000000000000000000000',
+      name: 'Lukso',
+      symbol: 'LYX',
+      decimals: 18,
+      balance: nativeBalance,
+    })
   }
 
-  const browserProvider = new ethers.BrowserProvider(eip1193Provider)
+  const erc725 = new ERC725(LSP5Schema, address, upProvider)
+  const assets = await erc725.getData('LSP5ReceivedAssets[]')
+
+  if (assets.value.length > 0) {
+    const assetPromises = assets.value.map(async (asset) => {
+      try {
+        const contract = new ethers.Contract(asset, LSP7DigitalAsset, browserProvider)
+        const balance = contract.balanceOf(address)
+        const decimals = contract.decimals()
+        const erc725 = new ERC725(LSP4Schema, asset, upProvider)
+        const metadata = erc725.getData(['LSP4TokenSymbol', 'LSP4TokenName'])
+
+        const [resolvedBalance, resolvedDecimals, resolvedMetadata] = await Promise.all([
+          balance,
+          decimals,
+          metadata,
+        ])
+
+        if (resolvedBalance > 0n) {
+          return {
+            assetAddress: asset,
+            name: resolvedMetadata[1].value,
+            symbol: resolvedMetadata[0].value,
+            decimals: parseInt(resolvedDecimals),
+            balance: resolvedBalance,
+          }
+        }
+      } catch (err) {
+        console.warn(`Error loading asset ${asset}:`, err)
+      }
+
+      return null
+    })
+
+    const resolvedAssets = await Promise.all(assetPromises)
+    returnAssets.push(...resolvedAssets.filter(Boolean))
+  }
+
+  return returnAssets
+}
+
+const getContextProfileImage = async () => {
+  const erc725 = new ERC725(LSP3Schemas, contextAccount.value, upProvider)
+  const profileData = await erc725.fetchData('LSP3Profile')
+
+  const images = profileData.value?.LSP3Profile?.profileImage
+
+  if (!Array.isArray(images) || images.length === 0) {
+    contextProfileImage.value = null
+    return
+  }
+
+  const sortImages = images.filter((img) => img.url).sort((a, b) => (b.width ?? 0) - (a.width ?? 0))
+
+  if (sortImages[0]?.url) {
+    contextProfileImage.value = validateIpfsUrl(sortImages[0].url)
+    return
+  }
+
+  contextProfileImage.value = null
+}
+
+const startCampaign = async (assetAddress, amount, maxAmount) => {
+  const signer = await browserProvider.getSigner()
+  contextCampaign.value = [BigInt(0), assetAddress]
+
+  if (!(await hasPermissions(contextAccount.value))) {
+    await setPermissions().then(async (trx) => {
+      await trx.wait(1)
+    })
+  }
+
+  return await followMeContract
+    .connect(signer)
+    .startCampaign([assetAddress, amount, maxAmount], {
+      gasLimit: 600000,
+    })
+    .then((e) => {
+      contextCampaign.value = [BigInt(amount), assetAddress]
+      return
+    })
+    .catch((e) => {
+      console.warn(e)
+      return
+    })
+}
+
+const cancelCampaign = async () => {
+  const signer = await browserProvider.getSigner()
+
+  return await followMeContract
+    .connect(signer)
+    .cancelCampaign({
+      gasLimit: 600000,
+    })
+    .then(() => {
+      contextCampaign.value = [BigInt(0), 0x0]
+      return
+    })
+    .catch(() => {
+      return
+    })
+}
+
+const setIsFollowingContext = async () => {
+  if (!contextAccount.value || !account.value || contextAccount.value === account.value) {
+    accountIsFollowingContext.value = false
+    accountCanCollect.value = true
+    return
+  }
+
+  const [exFollow, inFollow] = await followMeContract.isFollowing(
+    contextAccount.value,
+    account.value,
+  )
+
+  accountIsFollowingContext.value = exFollow
+  accountCanCollect.value = !inFollow
+
+  return
+}
+
+const followContext = async () => {
+  const signer = await browserProvider.getSigner()
 
   const LSP26FollowerSystemContract = new ethers.Contract(
     LSP26FollowerSystemAddress,
     LSP26FollowerSystem,
-    browserProvider,
+    signer,
   )
-  const followMeContract = new ethers.Contract(followMeAddress, FollowMe, browserProvider)
 
-  const accountsChanged = async (_accounts) => {
-    if (_accounts[0] === account.value) {
-      return
-    }
-    account.value = _accounts.length > 0 ? _accounts[0] : undefined
-    setIsFollowingContext()
+  return await LSP26FollowerSystemContract.follow(contextAccount.value).then((trx) => {
+    accountIsFollowingContext.value = true
+    return trx
+  })
+}
+
+const getRequiredPermissions = computed(() => {
+  return {
+    SUPER_CALL: true,
+    REENTRANCY: contextCampaign.value[0] == 0n && contextAccount.value == account.value,
+    SUPER_TRANSFERVALUE: contextCampaign.value[1] == '0x0000000000000000000000000000000000000000',
+    ADDUNIVERSALRECEIVERDELEGATE:
+      contextCampaign.value[0] == 0n && contextAccount.value == account.value,
+    CHANGEUNIVERSALRECEIVERDELEGATE:
+      contextCampaign.value[0] == 0n && contextAccount.value == account.value,
+    SUPER_SETDATA: contextCampaign.value[0] == 0n && contextAccount.value == account.value,
+  }
+})
+
+const hasPermissions = async (address) => {
+  const erc725 = new ERC725(LSP6Schema, address, upProvider)
+
+  const contextPermissions = await erc725.getData({
+    keyName: 'AddressPermissions:Permissions:<address>',
+    dynamicKeyParts: followMeAddress,
+  })
+
+  if (!contextPermissions.value) {
+    return false
   }
 
-  const contextAccountsChanged = async (_accounts) => {
-    if (typeof _accounts[0] !== 'undefined') {
-      if (_accounts[0] === contextAccount.value) {
-        return
-      }
-      contextCampaign.value = BigInt(await getCampaign(_accounts[0]))
-      contextBalance.value = BigInt(await browserProvider.getBalance(_accounts[0]))
-      contextAccount.value = _accounts[0]
-      setIsFollowingContext()
-    } else {
-      contextBalance.value = BigInt(0)
-      contextCampaign.value = BigInt(0)
-      contextAccount.value = undefined
-    }
+  return ERC725.checkPermissions(
+    Object.keys(getRequiredPermissions.value).filter((key) => getRequiredPermissions.value[key]),
+    contextPermissions.value,
+  )
+}
+
+const getCampaign = async (address) => {
+  return await followMeContract.getCampaign(address)
+}
+
+const setPermissions = async () => {
+  const erc725 = new ERC725(LSP6Schema, contextAccount.value, upProvider)
+
+  const addressPermissionsArrayValue = await erc725.getData('AddressPermissions[]')
+  let numberOfControllers = 0
+
+  if (Array.isArray(addressPermissionsArrayValue.value)) {
+    numberOfControllers = addressPermissionsArrayValue.value.length
   }
 
-  const startCampaign = async (amount, maxAmount) => {
-    amount = ethers.parseUnits(amount, 'ether')
-    maxAmount = ethers.parseUnits(maxAmount, 'ether')
-
-    if (!(await hasNativePermission())) {
-      await setNativePermissions()
-    }
-
-    const signer = await browserProvider.getSigner()
-
-    return await followMeContract
-      .connect(signer)
-      .startCampaign([amount, maxAmount], {
-        gasLimit: 600000,
-      })
-      .then(() => {
-        contextCampaign.value = BigInt(amount)
-        return
-      })
-      .catch(() => {
-        return
-      })
-  }
-
-  const cancelCampaign = async () => {
-    const signer = await browserProvider.getSigner()
-
-    return await followMeContract
-      .connect(signer)
-      .cancelCampaign({
-        gasLimit: 600000,
-      })
-      .then(() => {
-        contextCampaign.value = BigInt(0)
-        return
-      })
-      .catch(() => {
-        return
-      })
-  }
-
-  const setIsFollowingContext = async () => {
-    if (!contextAccount.value || !account.value || contextAccount.value === account.value) {
-      accountIsFollowingContext.value = false
-      accountCanCollect.value = false
-      return
-    }
-
-    const [exFollow, inFollow] = await followMeContract.isFollowing(
-      contextAccount.value,
-      account.value,
-    )
-
-    accountIsFollowingContext.value = exFollow
-    accountCanCollect.value = !inFollow
-
-    return
-  }
-
-  const followContext = async () => {
-    const signer = await browserProvider.getSigner()
-    const upContract = new ethers.Contract(account.value, UniversalProfile, signer)
-
-    const LSP26FollowerSystemCalldata =
-      await LSP26FollowerSystemContract.follow.populateTransaction(contextAccount.value)
-
-    const followMeContractCalldata = await followMeContract.collect.populateTransaction(
-      contextAccount.value,
-    )
-
-    return await upContract
-      .executeBatch(
-        [0, 0],
-        [LSP26FollowerSystemAddress, followMeAddress],
-        [0, 0],
-        [LSP26FollowerSystemCalldata.data, followMeContractCalldata.data],
-        {
-          gasLimit: 600000,
-        },
-      )
-      .then(() => {
-        accountIsFollowingContext.value = true
-        accountCanCollect.value = false
-        return
-      })
-  }
-
-  const collect = async () => {
-    const signer = await browserProvider.getSigner(account.value)
-
-    return await followMeContract
-      .connect(signer)
-      .collect(contextAccount.value, {
-        gasLimit: 600000,
-      })
-      .then(() => {
-        accountIsFollowingContext.value = true
-        accountCanCollect.value = false
-        return
-      })
-  }
-
-  const hasNativePermission = async () => {
-    const erc725 = new ERC725(LSP6Schema, contextAccount.value, upProvider)
-
-    const contextPermissions = await erc725.getData({
+  const permissionData = erc725.encodeData([
+    {
       keyName: 'AddressPermissions:Permissions:<address>',
       dynamicKeyParts: followMeAddress,
-    })
+      value: erc725.encodePermissions(getRequiredPermissions.value),
+    },
+    {
+      keyName: 'AddressPermissions[]',
+      value: [followMeAddress],
+      startingIndex: numberOfControllers,
+      totalArrayLength: numberOfControllers + 1,
+    },
+  ])
 
-    return (
-      contextPermissions &&
-      typeof contextPermissions.value === 'string' &&
-      contextPermissions.value === permissions
-    )
-  }
+  const signer = await browserProvider.getSigner()
+  const myUniversalProfile = new ethers.Contract(contextAccount.value, UniversalProfile, signer)
 
-  const getCampaign = async (address) => {
-    return await followMeContract.getCampaign(address)
-  }
+  return await myUniversalProfile.setDataBatch(permissionData.keys, permissionData.values, {
+    value: 0n,
+  })
+}
 
-  const setNativePermissions = async () => {
-    const erc725 = new ERC725(LSP6Schema, contextAccount.value, upProvider)
+const campaignDetails = computed(() => {
+  const assetAddress = contextCampaign.value[1]
 
-    const addressPermissionsArrayValue = await erc725.getData('AddressPermissions[]')
-    let numberOfControllers = 0
+  let asset = assetAddress
+    ? contextAssets.value.find((a) => a.assetAddress.toLowerCase() === assetAddress.toLowerCase())
+    : null
 
-    if (Array.isArray(addressPermissionsArrayValue.value)) {
-      numberOfControllers = addressPermissionsArrayValue.value.length
+  if (!asset) {
+    asset = {
+      balance: 0n,
     }
-
-    const permissionData = erc725.encodeData([
-      {
-        keyName: 'AddressPermissions:Permissions:<address>',
-        dynamicKeyParts: followMeAddress,
-        value: permissions,
-      },
-      {
-        keyName: 'AddressPermissions[]',
-        value: [followMeAddress],
-        startingIndex: numberOfControllers,
-        totalArrayLength: numberOfControllers + 1,
-      },
-    ])
-
-    const signer = await browserProvider.getSigner()
-    const myUniversalProfile = new ethers.Contract(contextAccount.value, UniversalProfile, signer)
-    return await myUniversalProfile.setDataBatch(permissionData.keys, permissionData.values)
   }
-
-  upProvider.on('accountsChanged', accountsChanged)
-  upProvider.on('contextAccountsChanged', contextAccountsChanged)
 
   return {
+    ...asset,
+    amount: contextCampaign.value[0],
+    permission: hasPermissions(contextAccount.value),
+  }
+})
+
+const accountsChanged = async (_accounts) => {
+  if (_accounts[0] === account.value) {
+    return
+  }
+  account.value = _accounts.length > 0 ? _accounts[0] : undefined
+  setIsFollowingContext()
+}
+
+const contextAccountsChanged = async (_accounts) => {
+  if (typeof _accounts[0] !== 'undefined') {
+    if (_accounts[0] === contextAccount.value) {
+      return
+    }
+    const campign = await getCampaign(_accounts[0])
+    contextCampaign.value = [BigInt(campign[0]), campign[1]]
+    contextAssets.value = await getAssets(_accounts[0])
+
+    contextAccount.value = _accounts[0]
+
+    setIsFollowingContext()
+    getContextProfileImage()
+  } else {
+    contextCampaign.value = BigInt(0)
+    contextAccount.value = undefined
+  }
+}
+
+upProvider.on('accountsChanged', accountsChanged)
+upProvider.on('contextAccountsChanged', contextAccountsChanged)
+
+export function useProvider() {
+  return {
     account,
-    contextAccount,
     accountIsFollowingContext,
     accountCanCollect,
 
-    contextCampaign,
-    contextBalance,
+    contextAccount,
+    contextAssets,
+    contextProfileImage,
+    campaignDetails,
 
     startCampaign,
     cancelCampaign,
+    setPermissions,
 
     followContext,
-    collect,
   }
 }
