@@ -106,6 +106,13 @@
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "registerReceiverDelegate",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "components": [
@@ -128,6 +135,11 @@
         "internalType": "struct FollowMe.Campaign",
         "name": "campaign",
         "type": "tuple"
+      },
+      {
+        "internalType": "bool",
+        "name": "registerReceiverDelegate",
+        "type": "bool"
       }
     ],
     "name": "startCampaign",
@@ -158,12 +170,12 @@
     "inputs": [
       {
         "internalType": "address",
-        "name": "caller_",
+        "name": "",
         "type": "address"
       },
       {
         "internalType": "uint256",
-        "name": "value_",
+        "name": "",
         "type": "uint256"
       },
       {

@@ -16,7 +16,10 @@ const hasActiveCampign = computed(() => campaignDetails.value?.amount > 0n)
   <ConfigStart v-if="!hasActiveCampign && contextAssets.length > 0" />
   <ConfigNoAssets v-else-if="!hasActiveCampign && contextAssets.length === 0" />
   <ConfigError
-    v-else-if="!campaignDetails.permission || campaignDetails.amount > campaignDetails.balance"
+    v-else-if="
+      campaignDetails.controllerErrors.length > 0 ||
+      campaignDetails.amount > campaignDetails.balance
+    "
   />
   <ConfigCancel v-else />
 </template>

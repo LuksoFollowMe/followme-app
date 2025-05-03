@@ -101,7 +101,7 @@ const start = async () => {
 
 <template>
   <div class="content">
-    <p>Boost your followers! Start a campaign and give new followers some LYX or other token.</p>
+    <p>Boost your followers! Start a campaign and reward new followers some LYX or other token.</p>
 
     <label>
       Quantity per new follower:

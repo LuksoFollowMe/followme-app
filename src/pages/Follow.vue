@@ -38,7 +38,7 @@ const follow = async () => {
       v-if="
         campaignDetails?.amount > 0n &&
         campaignDetails.amount <= campaignDetails.balance &&
-        campaignDetails.permission &&
+        campaignDetails.controllerErrors.length == 0 &&
         accountCanCollect
       "
     >

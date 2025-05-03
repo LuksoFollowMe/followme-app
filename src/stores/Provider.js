@@ -4,6 +4,7 @@ import { ethers } from 'ethers'
 import { ERC725 } from '@erc725/erc725.js'
 import { followMeAddress, LSP26FollowerSystemAddress } from '@/constants'
 import { validateIpfsUrl } from '@/utils/validateIpfsUrl.js'
+import LPS1Schemas from '@erc725/erc725.js/schemas/LSP1UniversalReceiverDelegate.json'
 import LSP3Schemas from '@erc725/erc725.js/schemas/LSP3ProfileMetadata.json'
 import LSP4Schema from '@erc725/erc725.js/schemas/LSP4DigitalAsset'
 import LSP5Schema from '@erc725/erc725.js/schemas/LSP5ReceivedAssets'
@@ -15,6 +16,7 @@ import UniversalProfile from '@/abi/UniversalProfile.json'
 
 const contextAccount = ref(undefined)
 const contextCampaign = ref([BigInt(0), 0x0])
+const contextControllerErrors = ref([])
 const contextAssets = ref([])
 const contextProfileImage = ref(null)
 
@@ -122,22 +124,38 @@ const getContextProfileImage = async () => {
   contextProfileImage.value = null
 }
 
+const getCampaign = async (address) => {
+  return await followMeContract.getCampaign(address)
+}
+
 const startCampaign = async (assetAddress, amount, maxAmount) => {
   const signer = await browserProvider.getSigner()
   contextCampaign.value = [BigInt(0), assetAddress]
 
-  if (!(await hasPermissions(contextAccount.value))) {
-    await setPermissions().then(async (trx) => {
-      await trx.wait(1)
-    })
+  contextControllerErrors.value = await getControllerErrors(contextAccount.value)
+
+  if (contextControllerErrors.value.includes('PERMISSIONS')) {
+    try {
+      await setControllerPermissions().then(async (trx) => {
+        await trx.wait(1)
+      })
+    } catch (error) {
+      return
+    }
   }
 
   return await followMeContract
     .connect(signer)
-    .startCampaign([assetAddress, amount, maxAmount], {
-      gasLimit: 600000,
-    })
-    .then((e) => {
+    .startCampaign(
+      [assetAddress, amount, maxAmount],
+      contextControllerErrors.value.includes('URD'),
+      {
+        gasLimit: 600000,
+      },
+    )
+    .then(async (trx) => {
+      await trx.wait(1)
+      contextControllerErrors.value = []
       contextCampaign.value = [BigInt(amount), assetAddress]
       return
     })
@@ -199,41 +217,49 @@ const followContext = async () => {
 
 const getRequiredPermissions = computed(() => {
   return {
+    REENTRANCY: contextControllerErrors.value.includes('URD'),
+    SUPER_SETDATA: contextControllerErrors.value.includes('URD'),
+    ADDUNIVERSALRECEIVERDELEGATE: contextControllerErrors.value.includes('URD'),
+    CHANGEUNIVERSALRECEIVERDELEGATE: contextControllerErrors.value.includes('URD'),
     SUPER_CALL: true,
-    REENTRANCY: contextCampaign.value[0] == 0n && contextAccount.value == account.value,
     SUPER_TRANSFERVALUE: contextCampaign.value[1] == '0x0000000000000000000000000000000000000000',
-    ADDUNIVERSALRECEIVERDELEGATE:
-      contextCampaign.value[0] == 0n && contextAccount.value == account.value,
-    CHANGEUNIVERSALRECEIVERDELEGATE:
-      contextCampaign.value[0] == 0n && contextAccount.value == account.value,
-    SUPER_SETDATA: contextCampaign.value[0] == 0n && contextAccount.value == account.value,
   }
 })
 
-const hasPermissions = async (address) => {
-  const erc725 = new ERC725(LSP6Schema, address, upProvider)
+const getControllerErrors = async (address) => {
+  const erc725 = new ERC725([...LPS1Schemas, ...LSP6Schema], address, upProvider)
 
-  const contextPermissions = await erc725.getData({
-    keyName: 'AddressPermissions:Permissions:<address>',
-    dynamicKeyParts: followMeAddress,
-  })
+  const erc725Data = await erc725.getData([
+    {
+      keyName: 'AddressPermissions:Permissions:<address>',
+      dynamicKeyParts: followMeAddress,
+    },
+    {
+      keyName: 'LSP1UniversalReceiverDelegate:<bytes32>',
+      dynamicKeyParts: erc725.encodeKeyName('LSP26FollowerSystem_FollowNotification'),
+    },
+  ])
 
-  if (!contextPermissions.value) {
-    return false
+  const errors = []
+
+  if (
+    !erc725Data[0].value ||
+    !ERC725.checkPermissions(
+      Object.keys(getRequiredPermissions.value).filter((key) => getRequiredPermissions.value[key]),
+      erc725Data[0].value,
+    )
+  ) {
+    errors.push('PERMISSIONS')
   }
 
-  return ERC725.checkPermissions(
-    Object.keys(getRequiredPermissions.value).filter((key) => getRequiredPermissions.value[key]),
-    contextPermissions.value,
-  )
+  if (erc725Data[1]?.value !== followMeAddress) {
+    errors.push('URD')
+  }
+  return errors
 }
 
-const getCampaign = async (address) => {
-  return await followMeContract.getCampaign(address)
-}
-
-const setPermissions = async () => {
-  const erc725 = new ERC725(LSP6Schema, contextAccount.value, upProvider)
+const setControllerPermissions = async () => {
+  const erc725 = new ERC725([...LPS1Schemas, ...LSP6Schema], contextAccount.value, upProvider)
 
   const addressPermissionsArrayValue = await erc725.getData('AddressPermissions[]')
   let numberOfControllers = 0
@@ -242,7 +268,7 @@ const setPermissions = async () => {
     numberOfControllers = addressPermissionsArrayValue.value.length
   }
 
-  const permissionData = erc725.encodeData([
+  const erc725Data = erc725.encodeData([
     {
       keyName: 'AddressPermissions:Permissions:<address>',
       dynamicKeyParts: followMeAddress,
@@ -259,9 +285,35 @@ const setPermissions = async () => {
   const signer = await browserProvider.getSigner()
   const myUniversalProfile = new ethers.Contract(contextAccount.value, UniversalProfile, signer)
 
-  return await myUniversalProfile.setDataBatch(permissionData.keys, permissionData.values, {
-    value: 0n,
-  })
+  return await myUniversalProfile
+    .setDataBatch(erc725Data.keys, erc725Data.values, {
+      value: 0n,
+      gasLimit: 1800000,
+    })
+    .then((trx) => {
+      contextControllerErrors.value = contextControllerErrors.value.filter(
+        (error) => error !== 'PERMISSIONS',
+      )
+      return trx
+    })
+}
+
+const setContrtollerUrd = async () => {
+  const signer = await browserProvider.getSigner()
+
+  return await followMeContract
+    .connect(signer)
+    .registerReceiverDelegate()
+    .then(async (trx) => {
+      contextControllerErrors.value = contextControllerErrors.value.filter(
+        (error) => error !== 'URD',
+      )
+      return trx
+    })
+    .catch((e) => {
+      console.warn(e)
+      return
+    })
 }
 
 const campaignDetails = computed(() => {
@@ -280,7 +332,7 @@ const campaignDetails = computed(() => {
   return {
     ...asset,
     amount: contextCampaign.value[0],
-    permission: hasPermissions(contextAccount.value),
+    controllerErrors: contextControllerErrors.value,
   }
 })
 
@@ -301,6 +353,7 @@ const contextAccountsChanged = async (_accounts) => {
     contextCampaign.value = [BigInt(campign[0]), campign[1]]
     contextAssets.value = await getAssets(_accounts[0])
 
+    contextControllerErrors.value = await getControllerErrors(_accounts[0])
     contextAccount.value = _accounts[0]
 
     setIsFollowingContext()
@@ -327,7 +380,8 @@ export function useProvider() {
 
     startCampaign,
     cancelCampaign,
-    setPermissions,
+    setControllerPermissions,
+    setContrtollerUrd,
 
     followContext,
   }

@@ -1,8 +1,8 @@
 <template>
   <div class="content">
     <p>
-      With FollowMe you can give new followers some LYX or LPS7 token. But it looks like your
-      profile has no tokens!
+      With FollowMe, you can reward new followers with LYX or LSP7 tokens. However, your Universal
+      Profile currently has no tokens. Please fund your profile to start the campaign.
     </p>
   </div>
 </template>

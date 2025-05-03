@@ -4,13 +4,21 @@ import { useProvider } from '@/stores/Provider.js'
 import Profile from '@/components/Profile.vue'
 import ConfigButton from '@/components/ConfigButton.vue'
 
-const { campaignDetails, setPermissions, cancelCampaign } = useProvider()
+const { campaignDetails, setControllerPermissions, setContrtollerUrd, cancelCampaign } =
+  useProvider()
 
 const loading = ref(false)
 
 const resetPermissions = async () => {
   loading.value = true
-  await setPermissions().finally(() => {
+  await setControllerPermissions().finally(() => {
+    loading.value = false
+  })
+}
+
+const resetUrd = async () => {
+  loading.value = true
+  await setContrtollerUrd().finally(() => {
     loading.value = false
   })
 }
@@ -26,19 +34,24 @@ const cancel = async () => {
 <template>
   <div class="content">
     <Profile />
-    <template v-if="!campaignDetails.permission">
-      <p>
-        You are currently running a FollowMe campaign, but there is an issue with the permissions.
-      </p>
+    <template v-if="!campaignDetails.controllerErrors.includes('PERMISSIONS')">
+      <p>Your FollowMe campaign is paused, the controller's permissions aren't set up correctly.</p>
 
       <ConfigButton :action="resetPermissions" :disabled="loading">
         {{ loading ? 'Continue in wallet' : 'Reset permissions' }}
       </ConfigButton>
     </template>
+    <template v-else-if="!campaignDetails.controllerErrors.includes('URD')">
+      <p>Your FollowMe campaign is paused due to an incorrectly configured controller.</p>
+
+      <ConfigButton :action="resetUrd" :disabled="loading">
+        {{ loading ? 'Continue in wallet' : 'Reset controller' }}
+      </ConfigButton>
+    </template>
     <template v-else-if="campaignDetails.amount > campaignDetails.balance">
       <p>
-        You are currently running a FollowMe campaign, but there aren't enough funds.
-        {{ campaignDetails.symbol }} left. Top up your profile.
+        You are currently running a FollowMe campaign, but there aren't enough funds. Top up your
+        profile.
       </p>
     </template>
 
